@@ -6,5 +6,5 @@ The fast-hash is a simple, robust, and efficient general-purpose hash function.
 
 ## Install
 
-    go get -u github.com/opennota/fasthash
+    go get -u github.com/opencoff/go-fasthash
 
