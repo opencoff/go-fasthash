@@ -14,64 +14,54 @@
 // Package fasthash provides fast-hash (a simple, robust, and efficient general-purpose hash function) implementation in Go.
 package fasthash
 
-import (
-	"reflect"
-	"unsafe"
+import "encoding/binary"
+
+const (
+	m    = 0x880355f21e6d1965
+	mixK = 0x2127599bf4325c37
 )
 
-func mix(v uint64) uint64 {
+// mixMul is mixK held in a variable rather than a constant: the compiler
+// then keeps it in a register across the hash64 loop instead of rebuilding
+// the 64-bit immediate on every iteration (MOVD + 3x MOVK on arm64).
+var mixMul uint64 = mixK
+
+func mix(v, k uint64) uint64 {
 	v ^= v >> 23
-	v *= 0x2127599bf4325c37
+	v *= k
 	v ^= v >> 47
 	return v
 }
 
 func hash64(seed uint64, buf []byte) uint64 {
-	const m = 0x880355f21e6d1965
+	k := mixMul
 	h := seed ^ (uint64(len(buf)) * m)
 
-	if n := len(buf) / 8; n > 0 {
-		hdr := reflect.SliceHeader{
-			Data: uintptr(unsafe.Pointer(&buf[0])),
-			Len:  n,
-			Cap:  n,
-		}
-		data := *(*[]uint64)(unsafe.Pointer(&hdr))
-
-		for _, v := range data {
-			h ^= mix(v)
-			h *= m
-		}
-		buf = buf[n*8:]
-	}
-
-	var v uint64
-	switch len(buf) {
-	case 7:
-		v ^= uint64(buf[6]) << 48
-		fallthrough
-	case 6:
-		v ^= uint64(buf[5]) << 40
-		fallthrough
-	case 5:
-		v ^= uint64(buf[4]) << 32
-		fallthrough
-	case 4:
-		v ^= uint64(buf[3]) << 24
-		fallthrough
-	case 3:
-		v ^= uint64(buf[2]) << 16
-		fallthrough
-	case 2:
-		v ^= uint64(buf[1]) << 8
-		fallthrough
-	case 1:
-		v ^= uint64(buf[0])
-		h ^= mix(v)
+	// This loop shape (i < len-7, buf[i:i+8]) lets the compiler prove
+	// every access in bounds, so the loop has no bounds checks.
+	for i := 0; i < len(buf)-7; i += 8 {
+		h ^= mix(binary.LittleEndian.Uint64(buf[i:i+8]), k)
 		h *= m
 	}
 
-	return mix(h)
+	if buf = buf[len(buf)&^7:]; len(buf) > 0 {
+		h ^= mix(tail(buf), k)
+		h *= m
+	}
+	return mix(h, k)
+}
+
+// tail returns the 1..7 bytes of b as a little-endian uint64.
+func tail(b []byte) uint64 {
+	n := len(b)
+	if n >= 4 {
+		// two overlapping 4-byte loads: b[0:4] and b[n-4:n]
+		lo := uint64(binary.LittleEndian.Uint32(b))
+		hi := uint64(binary.LittleEndian.Uint32(b[n-4:]))
+		return lo | (hi>>(8*(8-n)))<<32
+	}
+	// b[0], b[n/2] and b[n-1] cover every byte for n = 1..3
+	return uint64(b[0]) | uint64(b[n>>1])<<(8*(n>>1)) | uint64(b[n-1])<<(8*(n-1))
 }
 
 func Hash32(seed uint32, buf []byte) uint32 {

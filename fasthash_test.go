@@ -1,6 +1,9 @@
 package fasthash
 
-import "testing"
+import (
+	"math/rand/v2"
+	"testing"
+)
 
 var testCases64 = []struct {
 	in   string
@@ -69,5 +72,87 @@ func TestHash32(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("Hash32(0, %q): want %d, got %d", tc.in, tc.want, got)
 		}
+	}
+}
+
+// testCasesLong were produced by the original reflect.SliceHeader-based
+// hash64, over buf[i] = byte(i*131 + 7).
+var testCasesLong = []struct {
+	seed uint64
+	n    int
+	want uint64
+}{
+	{0x0, 63, 14668168003056199637},
+	{0x0, 64, 5797897923055584387},
+	{0x123456789abcdef, 65, 5385230469984326604},
+	{0x123456789abcdef, 255, 2723948467434838504},
+	{0x2a, 1000, 16971330316647270956},
+}
+
+func TestHash64Long(t *testing.T) {
+	buf := make([]byte, 1000)
+	for i := range buf {
+		buf[i] = byte(i*131 + 7)
+	}
+	for _, tc := range testCasesLong {
+		got := Hash64(tc.seed, buf[:tc.n])
+		if got != tc.want {
+			t.Errorf("Hash64(%#x, buf[:%d]): want %d, got %d", tc.seed, tc.n, tc.want, got)
+		}
+	}
+}
+
+// refHash64 is a direct byte-at-a-time transcription of fast-hash.
+func refHash64(seed uint64, buf []byte) uint64 {
+	mix := func(v uint64) uint64 {
+		v ^= v >> 23
+		v *= 0x2127599bf4325c37
+		v ^= v >> 47
+		return v
+	}
+	h := seed ^ (uint64(len(buf)) * m)
+	for len(buf) > 0 {
+		n := min(len(buf), 8)
+		var v uint64
+		for i := n - 1; i >= 0; i-- {
+			v = v<<8 | uint64(buf[i])
+		}
+		h ^= mix(v)
+		h *= m
+		buf = buf[n:]
+	}
+	return mix(h)
+}
+
+// TestHash64Ref checks Hash64 (assembly on amd64) and hash64 against
+// refHash64 for every length up to 1 KiB, at every alignment.
+func TestHash64Ref(t *testing.T) {
+	r := rand.New(rand.NewPCG(1, 2))
+	buf := make([]byte, 1024+8)
+	for i := range buf {
+		buf[i] = byte(r.Uint32())
+	}
+	for off := 0; off < 8; off++ {
+		for n := 0; off+n <= len(buf); n++ {
+			b := buf[off : off+n]
+			seed := r.Uint64()
+			want := refHash64(seed, b)
+			if got := Hash64(seed, b); got != want {
+				t.Fatalf("Hash64 off=%d len=%d: want %d, got %d", off, n, want, got)
+			}
+			if got := hash64(seed, b); got != want {
+				t.Fatalf("hash64 off=%d len=%d: want %d, got %d", off, n, want, got)
+			}
+		}
+	}
+}
+
+func TestHash64NoAlloc(t *testing.T) {
+	allocs := testing.AllocsPerRun(100, func() {
+		var b [64]byte
+		sink = Hash64(0, b[:])
+	})
+	if allocs != 0 {
+		t.Errorf("Hash64 allocates %v times per call", allocs)
 	}
 }

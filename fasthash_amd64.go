@@ -13,4 +13,8 @@
 
 package fasthash
 
+// The assembly never retains buf; without this, every buffer passed to
+// Hash64 escapes to the heap.
+//
+//go:noescape
 func Hash64(seed uint64, buf []byte) uint64
